@@ -17,8 +17,8 @@ Letterboxd verilerinizle kişiselleştirilmiş film önerileri alın! RAG (Retri
 
 ## 🚀 Hızlı Başlangıç
 ### ÖNEMLİ !
-API anahtarını aktifleştirmek için .env dosyası oluşturmak zorundasınız.
-GEMINI_API_KEY="sizin_api_anahtarınız_buraya"
+- API anahtarını aktifleştirmek için .env dosyası oluşturmak zorundasınız.
+- GEMINI_API_KEY="sizin_api_anahtarınız_buraya"
 ### Gereksinimler
 
 - Python 3.8+
