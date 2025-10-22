@@ -109,8 +109,7 @@ MovieMind/
 ## 🤝 Destek
 
 Sorularınız için:
-- **Issue** açın: [GitHub Issues](https://github.com/KULLANICI_ADINIZ/MovieMind/issues)
-- **Email**: your-email@example.com
+- **Issue** açın: [GitHub Issues](https://github.com/hy0pr0b/MovieMind/issues)
 
 
 **⭐ Bu projeyi beğendiyseniz yıldız vermeyi unutmayın!**
