@@ -16,6 +16,8 @@ Letterboxd verilerinizle kişiselleştirilmiş film önerileri alın! RAG (Retri
 - 🔍 **Akıllı Filtreleme**: Yıl ve tür bazlı filtreleme seçenekleri
 
 ## 🚀 Hızlı Başlangıç
+### ÖNEMLİ !
+API anahtarını aktifleştirmek için .env dosyası oluşturmak zorundasınız.
 
 ### Gereksinimler
 
