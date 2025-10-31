@@ -10,16 +10,35 @@ class MovieMindRAG:
     def __init__(self):
         load_dotenv()
         self.api_key = os.getenv("GEMINI_API_KEY")
-        self.embedding_model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+        
+        # Set cache directory for Hugging Face models
+        cache_dir = os.getenv("TRANSFORMERS_CACHE", "/app/.cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Use a more compatible model for Hugging Face Spaces
+        try:
+            self.embedding_model = SentenceTransformer('sentence-transformers/paraphrase-MiniLM-L6-v2', cache_folder=cache_dir)
+        except Exception as e:
+            # Fallback to an even simpler model
+            self.embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', cache_folder=cache_dir)
+        
+        # Set up ChromaDB with proper cache directory
+        cache_dir = os.getenv("CHROMA_CACHE_DIR", "/app/.cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
         self.client = chromadb.PersistentClient(path="./chroma_db")
         self.collection = None
         self.gemini_model = None
+        
+        # Augmentation ayarları
+        self.enable_document_augmentation = True
+        self.enable_query_augmentation = True
 
     def setup_gemini(self):
         if not self.api_key:
             return False
         genai.configure(api_key=self.api_key)
-        self.gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+        self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
         return True
         
     def load_letterboxd_data(self, folder_path: str):
@@ -46,6 +65,93 @@ class MovieMindRAG:
         
         return df
     
+    def augment_document(self, name: str, year: int, rating: float, review: str) -> List[str]:
+        """
+        Bir film dokümanını farklı açılardan yazarak çoğaltır (Document Augmentation)
+        """
+        augmented_texts = []
+        
+        # Varyasyon 1: Standart format
+        text1 = f"Film: {name} ({year if year != -1 else 'Yıl yok'})"
+        if rating >= 0:
+            text1 += f" | Puan: {rating}/5"
+        if review:
+            text1 += f" | Yorum: {review}"
+        augmented_texts.append(text1)
+        
+        # Varyasyon 2: Alternatif format
+        text2 = f"{name} adlı {year if year != -1 else 'bilinmeyen yıl'} yapımı film"
+        if rating >= 0:
+            text2 += f" | Kullanıcı puanı: {rating}/5"
+        if review:
+            text2 += f" | İnceleme: {review}"
+        augmented_texts.append(text2)
+        
+        # Varyasyon 3: Farklı açıdan
+        text3 = f"Film adı: {name}"
+        if year != -1:
+            text3 += f" | Yapım yılı: {year}"
+        if rating >= 0:
+            text3 += f" | Değerlendirme: {rating} yıldız"
+        if review:
+            text3 += f" | Kullanıcı yorumu: {review}"
+        augmented_texts.append(text3)
+        
+        # Varyasyon 4: Daha detaylı format
+        if rating >= 0 and review:
+            text4 = f"{name} ({year if year != -1 else 'Bilinmeyen yıl'}) - {rating}/5 puanlı bir film. İnceleme: {review}"
+            augmented_texts.append(text4)
+        
+        return augmented_texts
+    
+    def augment_query(self, query: str) -> List[str]:
+        """
+        Kullanıcı sorgusunu zenginleştirir (Query Augmentation)
+        """
+        augmented_queries = [query]  # Orijinal sorgu her zaman dahil
+        
+        # Türkçe sinema terimleri eş anlamlıları
+        genre_synonyms = {
+            'aksiyon': ['aksiyon', 'action', 'macera', 'adventure', 'gerilim', 'thriller'],
+            'komedi': ['komedi', 'comedy', 'mizah', 'güldürü'],
+            'drama': ['drama', 'dramatik', 'duygusal'],
+            'korku': ['korku', 'horror', 'gerilim', 'thriller', 'korku filmi'],
+            'bilim kurgu': ['bilim kurgu', 'sci-fi', 'science fiction', 'gelecek', 'uzay'],
+            'romantik': ['romantik', 'romance', 'aşk', 'romantik komedi'],
+            'gerilim': ['gerilim', 'thriller', 'suspense', 'heyecanlı'],
+        }
+        
+        query_lower = query.lower()
+        
+        # Eğer sorgu bir tür içeriyorsa, alternatif terimler ekle
+        for genre, synonyms in genre_synonyms.items():
+            if genre in query_lower:
+                for synonym in synonyms[:2]:  # İlk 2 eş anlamlıyı ekle
+                    if synonym != genre:
+                        new_query = query.replace(genre, synonym)
+                        if new_query not in augmented_queries:
+                            augmented_queries.append(new_query)
+        
+        # Alternatif formülasyonlar
+        if 'film' not in query_lower and 'movie' not in query_lower:
+            augmented_queries.append(f"{query} film")
+            augmented_queries.append(f"{query} filmleri")
+        
+        # Farklı soru formatları ekle
+        question_variations = [
+            query,
+            f"{query} öner",
+            f"{query} tavsiye et",
+            f"{query} türünde film",
+        ]
+        
+        for var in question_variations:
+            if var not in augmented_queries:
+                augmented_queries.append(var)
+        
+        # Maksimum 5 query döndür (performans için)
+        return augmented_queries[:5]
+    
     def create_movie_documents(self, df: pd.DataFrame) -> List[Dict]:
         documents = []
         
@@ -66,22 +172,45 @@ class MovieMindRAG:
             except Exception:
                 rating_val = -1.0
 
-            text = f"Film: {name_val} ({year_val if year_val != -1 else 'Yıl yok'})"
-            if rating_val >= 0:
-                text += f" | Puan: {rating_val}/5"
+            review_text = ''
             if pd.notna(row.get('Review')) and str(row['Review']).strip():
-                text += f" | Yorum: {row['Review']}"
-            
-            documents.append({
-                'id': f"{name_val}_{year_val}",
-                'text': text,
-                'metadata': {
-                    'title': name_val,
-                    'year': int(year_val),
-                    'rating': float(rating_val),
-                    'watched': bool(row.get('Watched', False))
-                }
-            })
+                review_text = str(row['Review']).strip()
+
+            # Augmentation kullanılıyorsa, birden fazla doküman versiyonu oluştur
+            if self.enable_document_augmentation:
+                augmented_texts = self.augment_document(name_val, year_val, rating_val, review_text)
+                # Her augment edilmiş versiyon için ayrı doküman oluştur
+                for idx, text in enumerate(augmented_texts):
+                    documents.append({
+                        'id': f"{name_val}_{year_val}_aug{idx}",
+                        'text': text,
+                        'metadata': {
+                            'title': name_val,
+                            'year': int(year_val),
+                            'rating': float(rating_val),
+                            'watched': bool(row.get('Watched', False)),
+                            'augmented': True,
+                            'aug_index': idx
+                        }
+                    })
+            else:
+                # Augmentation kapalıysa, sadece standart format
+                text = f"Film: {name_val} ({year_val if year_val != -1 else 'Yıl yok'})"
+                if rating_val >= 0:
+                    text += f" | Puan: {rating_val}/5"
+                if review_text:
+                    text += f" | Yorum: {review_text}"
+                
+                documents.append({
+                    'id': f"{name_val}_{year_val}",
+                    'text': text,
+                    'metadata': {
+                        'title': name_val,
+                        'year': int(year_val),
+                        'rating': float(rating_val),
+                        'watched': bool(row.get('Watched', False))
+                    }
+                })
         
         return documents
     
@@ -110,23 +239,45 @@ class MovieMindRAG:
         if not self.collection:
             return []
         
-        query_embedding = self.embedding_model.encode([query]).tolist()
+        # Query augmentation kullanılıyorsa, birden fazla sorgu oluştur
+        if self.enable_query_augmentation:
+            augmented_queries = self.augment_query(query)
+            # Her augment edilmiş sorgu için embedding oluştur
+            query_embeddings = self.embedding_model.encode(augmented_queries).tolist()
+        else:
+            query_embeddings = self.embedding_model.encode([query]).tolist()
         
+        # Tüm augment edilmiş sorgular için arama yap
         results = self.collection.query(
-            query_embeddings=query_embedding,
-            n_results=n_results
+            query_embeddings=query_embeddings,
+            n_results=n_results * 2  # Daha fazla sonuç al, sonra unique'leştir
         )
         
+        # Sonuçları birleştir ve unique'leştir (aynı film tekrar göstermesin)
+        seen_movies = set()
         movies = []
+        
         if results and results['ids']:
-            for i in range(len(results['ids'][0])):
-                metadata = results['metadatas'][0][i]
-                movies.append({
-                    'title': metadata['title'],
-                    'year': metadata['year'],
-                    'rating': metadata['rating'],
-                    'watched': metadata['watched']
-                })
+            # Tüm sorgu sonuçlarını birleştir
+            all_movies = []
+            for query_idx in range(len(results['ids'])):
+                if results['ids'][query_idx]:
+                    for i in range(len(results['ids'][query_idx])):
+                        metadata = results['metadatas'][query_idx][i]
+                        movie_key = f"{metadata['title']}_{metadata['year']}"
+                        
+                        if movie_key not in seen_movies:
+                            seen_movies.add(movie_key)
+                            all_movies.append({
+                                'title': metadata['title'],
+                                'year': metadata['year'],
+                                'rating': metadata['rating'],
+                                'watched': metadata['watched']
+                            })
+            
+            # Rating'e göre sırala ve n_results kadar döndür
+            movies = sorted(all_movies, key=lambda x: x.get('rating', 0.0), reverse=True)[:n_results]
+        
         return movies
 
     def get_recommendations(self, query: str, filters: Dict):
